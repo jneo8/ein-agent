@@ -23,7 +23,7 @@ def run_incident_workflow(
         None,
         "--include",
         "-i",
-        help="Alert names to include (whitelist). If not specified, all alerts are included.",
+        help="Alert names or fingerprints to include (whitelist). If not specified, all alerts are included.",
     ),
     mcp_servers: List[str] = typer.Option(
         ["kubernetes", "grafana"],
@@ -67,13 +67,24 @@ def run_incident_workflow(
         "--dry-run",
         help="Query and filter alerts but don't trigger workflow",
     ),
+    show_labels: bool = typer.Option(
+        False,
+        "--show-labels",
+        help="Show full labels in the alert table",
+    ),
+    no_prompt: bool = typer.Option(
+        False,
+        "--no-prompt",
+        "-y",
+        help="Skip confirmation prompt and trigger workflow automatically",
+    ),
 ):
     """Query Alertmanager and trigger incident correlation workflow.
 
     This command will:
     1. Query Alertmanager API for alerts
     2. Filter alerts by blacklist (default: Watchdog)
-    3. Filter alerts by whitelist (if --include specified)
+    3. Filter alerts by whitelist (if --include specified) - accepts alert names or fingerprints
     4. Filter alerts by status (firing/resolved/all)
     5. Trigger IncidentCorrelationWorkflow in Temporal
 
@@ -82,8 +93,14 @@ def run_incident_workflow(
       # Run with default settings (blacklists Watchdog, includes all others)
       ein-agent-cli run-incident-workflow
 
-      # Include only specific alerts
+      # Include only specific alerts by name
       ein-agent-cli run-incident-workflow -i KubePodNotReady -i KubePodCrashLooping
+
+      # Include specific alerts by fingerprint
+      ein-agent-cli run-incident-workflow -i a1b2c3d4e5f6 -i 1a2b3c4d5e6f
+
+      # Mix alert names and fingerprints
+      ein-agent-cli run-incident-workflow -i KubePodNotReady -i a1b2c3d4e5f6
 
       # Custom blacklist (exclude TargetDown and Watchdog)
       ein-agent-cli run-incident-workflow -b TargetDown -b Watchdog
@@ -96,6 +113,9 @@ def run_incident_workflow(
 
       # Dry run to see what would be triggered
       ein-agent-cli run-incident-workflow --dry-run
+
+      # Skip confirmation prompt and trigger automatically
+      ein-agent-cli run-incident-workflow -y
     """
     # Create workflow configuration from CLI arguments
     config = WorkflowConfig.from_cli_args(
@@ -109,6 +129,8 @@ def run_incident_workflow(
         status=status,
         blacklist=blacklist,
         dry_run=dry_run,
+        show_labels=show_labels,
+        no_prompt=no_prompt,
     )
 
     # Run orchestrator with validated configuration

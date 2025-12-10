@@ -154,7 +154,7 @@ class AlertFilterConfig(BaseModel):
 
     include: Optional[List[str]] = Field(
         default=None,
-        description="Alert names to include (whitelist)"
+        description="Alert names or fingerprints to include (whitelist)"
     )
     blacklist: Optional[List[str]] = Field(
         default=["Watchdog"],
@@ -202,6 +202,14 @@ class WorkflowConfig(BaseModel):
         default=False,
         description="If True, don't trigger workflow"
     )
+    show_labels: bool = Field(
+        default=False,
+        description="If True, show labels in alert table"
+    )
+    no_prompt: bool = Field(
+        default=False,
+        description="If True, skip confirmation prompt"
+    )
     temporal: TemporalConfig = Field(
         default_factory=TemporalConfig,
         description="Temporal configuration"
@@ -232,12 +240,14 @@ class WorkflowConfig(BaseModel):
         status: str,
         blacklist: Optional[List[str]],
         dry_run: bool,
+        show_labels: bool,
+        no_prompt: bool,
     ) -> "WorkflowConfig":
         """Create WorkflowConfig from CLI arguments.
 
         Args:
             alertmanager_url: Alertmanager URL
-            include: Alert names to include (whitelist)
+            include: Alert names or fingerprints to include (whitelist)
             mcp_servers: MCP server names to use
             temporal_host: Temporal server host:port
             temporal_namespace: Temporal namespace
@@ -246,6 +256,8 @@ class WorkflowConfig(BaseModel):
             status: Filter alerts by status
             blacklist: Alert names to exclude
             dry_run: If True, don't trigger workflow
+            show_labels: If True, show labels in alert table
+            no_prompt: If True, skip confirmation prompt
 
         Returns:
             WorkflowConfig instance
@@ -269,6 +281,8 @@ class WorkflowConfig(BaseModel):
             mcp_servers=mcp_servers,
             workflow_id=workflow_id,
             dry_run=dry_run,
+            show_labels=show_labels,
+            no_prompt=no_prompt,
             temporal=temporal_config,
             filters=filter_config,
         )
@@ -304,7 +318,7 @@ class AlertFilterParams(BaseModel):
     )
     whitelist: Optional[List[str]] = Field(
         default=None,
-        description="Alert names to include (whitelist)"
+        description="Alert names or fingerprints to include (whitelist)"
     )
     blacklist: Optional[List[str]] = Field(
         default=None,

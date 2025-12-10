@@ -19,22 +19,33 @@ class AlertRegistry:
         """Initialize alert registry.
 
         Args:
-            alerts_whitelist: List of alert names to filter. If None, all alerts are accepted.
+            alerts_whitelist: List of alert names or fingerprints to filter. If None, all alerts are accepted.
         """
         self.whitelist = set(alerts_whitelist) if alerts_whitelist else None
 
-    def is_whitelisted(self, alert_name: str) -> bool:
-        """Check if alert is whitelisted.
+    def is_whitelisted(self, alert_name: str, fingerprint: str = "") -> bool:
+        """Check if alert is whitelisted by name or fingerprint.
 
         Args:
             alert_name: Name of the alert
+            fingerprint: Fingerprint of the alert (full fingerprint from API)
 
         Returns:
             True if alert is whitelisted (or no whitelist configured), False otherwise
         """
         if self.whitelist is None:
             return True
-        return alert_name in self.whitelist
+
+        # Check alert name
+        if alert_name in self.whitelist:
+            return True
+
+        # Check fingerprint - support both full and partial (prefix) matching
+        for item in self.whitelist:
+            if fingerprint.startswith(item):
+                return True
+
+        return False
 
 
 async def query_alertmanager(params: AlertmanagerQueryParams) -> List[AlertmanagerAlert]:
@@ -93,9 +104,10 @@ def filter_alerts(params: AlertFilterParams) -> List[AlertmanagerAlert]:
     blacklisted_count = 0
 
     for alert in params.alerts:
-        # Extract alert name and status from Pydantic model
+        # Extract alert name, fingerprint, and status from Pydantic model
         alert_name = alert.labels.get("alertname", "unknown")
         alert_status = alert.status.state
+        fingerprint = alert.fingerprint
 
         # Apply blacklist filter first
         if params.blacklist and alert_name in params.blacklist:
@@ -106,8 +118,8 @@ def filter_alerts(params: AlertFilterParams) -> List[AlertmanagerAlert]:
         if params.status_filter and alert_status != params.status_filter:
             continue
 
-        # Apply whitelist filter
-        if not alert_registry.is_whitelisted(alert_name):
+        # Apply whitelist filter (checks both alert name and fingerprint)
+        if not alert_registry.is_whitelisted(alert_name, fingerprint):
             continue
 
         filtered.append(alert)
