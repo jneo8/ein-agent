@@ -67,20 +67,16 @@ async def trigger_incident_workflow(params: TemporalWorkflowParams) -> str:
 # TODO: Switch to execute_update when operator supports Temporal 1.25.0+
 
 async def trigger_human_in_loop_workflow(
-    query: str,
-    mcp_servers: List[str],
+    user_prompt: str,
     config: TemporalConfig,
     workflow_id: Optional[str] = None,
-    context: Optional[Dict[str, str]] = None,
 ) -> str:
     """Trigger HumanInLoopWorkflow in Temporal.
 
     Args:
-        query: Task query or description
-        mcp_servers: List of MCP server names
+        user_prompt: User prompt or task description
         config: Temporal configuration
         workflow_id: Custom workflow ID
-        context: Additional context dictionary
 
     Returns:
         Workflow ID
@@ -101,15 +97,15 @@ async def trigger_human_in_loop_workflow(
         workflow_id = f"human-in-loop-{timestamp}"
 
     console.print_info(f"Starting workflow: {workflow_id}")
-    console.print_dim(f"Query: {query}")
-    console.print_dim(f"MCP servers: {mcp_servers}")
+    console.print_dim(f"User prompt: {user_prompt}")
 
     # Start workflow (it will be in pending state initially)
+    # MCP servers are configured on the worker and automatically available
     handle = await client.start_workflow(
         "HumanInLoopWorkflow",
         id=workflow_id,
         task_queue=config.queue,
-        memo={"mcp_servers": mcp_servers, "query": query},
+        memo={"user_prompt": user_prompt},
     )
 
     console.print_success(f"✓ Workflow started: {workflow_id}")
@@ -119,18 +115,14 @@ async def trigger_human_in_loop_workflow(
 async def start_workflow_execution(
     client: TemporalClient,
     workflow_id: str,
-    query: str,
-    mcp_servers: List[str],
-    context: Dict[str, str],
+    user_prompt: str,
 ) -> str:
     """Send start_execution signal to workflow.
 
     Args:
         client: Temporal client
         workflow_id: Workflow ID to signal
-        query: Task query or description
-        mcp_servers: MCP server names
-        context: Additional context
+        user_prompt: User prompt or task description
 
     Returns:
         Acknowledgment message
@@ -141,9 +133,7 @@ async def start_workflow_execution(
     handle = client.get_workflow_handle(workflow_id)
 
     execution_input = {
-        "query": query,
-        "mcp_servers": mcp_servers,
-        "context": context,
+        "user_prompt": user_prompt,
     }
 
     # NOTE: Using signal instead of execute_update (workaround for Temporal 1.23.1)

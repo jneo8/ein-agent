@@ -139,12 +139,6 @@ def run_incident_workflow(
 
 @app.command()
 def human_in_loop(
-    mcp_servers: List[str] = typer.Option(
-        ["kubernetes", "grafana"],
-        "--mcp-server",
-        "-m",
-        help="MCP server names to use",
-    ),
     temporal_host: str = typer.Option(
         None,
         "--temporal-host",
@@ -175,58 +169,45 @@ def human_in_loop(
         "--max-iterations",
         help="Maximum workflow iterations",
     ),
-    context_json: Optional[str] = typer.Option(
-        None,
-        "--context",
-        "-c",
-        help="Additional context as JSON string",
-    ),
 ):
     """Interactive human-in-the-loop workflow execution.
 
-    This command enables you to work with AI agents in an interactive manner.
-    The agent will execute tasks using MCP servers and will ask for your input
-    when it needs help with decisions, tool execution, or clarifications.
+    This command enables you to work with AI agents in an interactive, conversational manner.
+    The agent will execute tasks using MCP servers configured on the worker and will ask
+    for your input when it needs help with decisions, tool execution, or clarifications.
+
+    MCP servers are configured on the worker side via environment variables.
+    See the worker documentation for MCP server configuration.
+
+    During the session:
+    - Simply type your responses to interact with the agent
+    - Type '/help' to see available commands
+    - Type '/refresh' to get the latest workflow status
+    - Type '/connect-workflow <workflow-id>' to resume an existing conversation
 
     Examples:
 
-      # Basic usage
+      # Basic usage - you'll be prompted for your task
       ein-agent-cli human-in-loop
 
-      # With specific MCP servers
-      ein-agent-cli human-in-loop -m kubernetes -m prometheus
-
-      # With additional context
-      ein-agent-cli human-in-loop \\
-          --context '{"alert": "HighLatency", "severity": "critical"}'
+      # Connect to an existing workflow
+      ein-agent-cli human-in-loop
+      # Then at the prompt, type: /connect-workflow human-in-loop-20251223-105906
 
       # Custom Temporal configuration
       ein-agent-cli human-in-loop \\
           --temporal-host temporal.example.com:7233 \\
           --temporal-namespace production
     """
-    import json
-
-    # Parse context JSON if provided
-    context = {}
-    if context_json:
-        try:
-            context = json.loads(context_json)
-        except json.JSONDecodeError as e:
-            console.print_error(f"Invalid JSON in --context: {e}")
-            raise typer.Exit(1)
-
     # Create configuration from CLI arguments
     config = HumanInLoopConfig.from_cli_args(
-        query="",  # Empty query - will be provided interactively
-        mcp_servers=mcp_servers,
+        user_prompt="",  # Empty user prompt - will be provided interactively
         temporal_host=temporal_host,
         temporal_namespace=temporal_namespace,
         temporal_queue=temporal_queue,
         workflow_id=workflow_id,
         poll_interval=poll_interval,
         max_iterations=max_iterations,
-        context=context,
     )
 
     # Run orchestrator

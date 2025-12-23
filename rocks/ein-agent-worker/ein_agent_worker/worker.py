@@ -17,6 +17,7 @@ from ein_agent_worker.workflows.incident_correlation import (
     CorrectiveRcaWorkflow,
 )
 from ein_agent_worker.workflows.human_in_loop import HumanInLoopWorkflow
+from ein_agent_worker.activities import get_available_mcp_servers
 from temporalio.contrib.openai_agents import OpenAIAgentsPlugin, ModelActivityParameters
 
 logging.basicConfig(level=logging.INFO)
@@ -85,6 +86,7 @@ async def main():
             CorrectiveRcaWorkflow,
             HumanInLoopWorkflow,
         ],
+        activities=[get_available_mcp_servers],
     )
 
     logger.info("Worker started successfully on queue: %s", queue)

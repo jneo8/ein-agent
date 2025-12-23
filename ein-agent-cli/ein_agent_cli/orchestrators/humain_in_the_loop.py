@@ -28,11 +28,12 @@ async def run_human_in_loop(config: HumanInLoopConfig) -> None:
     """Orchestrate human-in-the-loop workflow execution.
 
     This function:
-    1. Triggers the workflow in Temporal
-    2. Sends the initial query
-    3. Polls for status updates
-    4. Prompts user for input when agent needs help
-    5. Displays final report when execution completes
+    1. Prompts user for initial task
+    2. Triggers the workflow in Temporal
+    3. Sends the initial user prompt
+    4. Polls for status updates
+    5. Prompts user for input when agent needs help
+    6. Displays final report when execution completes
 
     Args:
         config: Human-in-the-loop configuration
@@ -44,8 +45,6 @@ async def run_human_in_loop(config: HumanInLoopConfig) -> None:
         console.print_header("Ein Agent - Human-in-the-Loop Workflow\n")
 
         # Display configuration
-        console.print_info(f"Query: {config.query}")
-        console.print_dim(f"MCP servers: {config.mcp_servers}")
         console.print_dim(f"Temporal: {config.temporal.host}/{config.temporal.namespace}")
         console.print_newline()
 
@@ -55,26 +54,85 @@ async def run_human_in_loop(config: HumanInLoopConfig) -> None:
             namespace=config.temporal.namespace,
         )
 
-        # Trigger workflow
-        workflow_id = await trigger_human_in_loop_workflow(
-            query=config.query,
-            mcp_servers=config.mcp_servers,
-            config=config.temporal,
-            workflow_id=config.workflow_id,
-            context=config.context,
-        )
+        # Check if user wants to connect to existing workflow or start new one
+        workflow_id = None
+        user_prompt = config.user_prompt
 
-        # Start execution
-        console.print_info("Starting workflow execution...")
-        await start_workflow_execution(
-            client=client,
-            workflow_id=workflow_id,
-            query=config.query,
-            mcp_servers=config.mcp_servers,
-            context=config.context,
-        )
+        if not user_prompt or user_prompt.strip() == "":
+            console.print_info("What would you like the agent to help you with?")
 
-        console.print_success("✓ Workflow execution started")
+            while True:
+                user_input = Prompt.ask("You")
+
+                # Handle special commands
+                if user_input.strip() == "/help":
+                    _display_help()
+                    console.print_newline()
+                    continue
+                elif user_input.strip().startswith("/connect-workflow "):
+                    # Extract workflow ID
+                    workflow_id = user_input.strip()[len("/connect-workflow "):].strip()
+                    if not workflow_id:
+                        console.print_error("Please provide a workflow ID: /connect-workflow <workflow-id>")
+                        continue
+
+                    # Try to connect to existing workflow
+                    console.print_info(f"Connecting to workflow: {workflow_id}")
+                    try:
+                        status = await get_workflow_status(client, workflow_id)
+                        if status.state in ["completed", "failed"]:
+                            console.print_error(f"Cannot connect: workflow is {status.state}")
+                            workflow_id = None
+                            continue
+
+                        console.print_success(f"✓ Connected to workflow: {workflow_id}")
+                        console.print_dim(f"Current state: {status.state}")
+                        console.print_newline()
+                        break
+                    except Exception as e:
+                        console.print_error(f"Failed to connect to workflow: {e}")
+                        workflow_id = None
+                        continue
+
+                elif user_input.strip() == "/end" or not user_input or user_input.strip() == "":
+                    console.print_warning("Exiting.")
+                    raise typer.Exit(0)
+                else:
+                    # Valid task provided - start new workflow
+                    user_prompt = user_input
+                    break
+
+        if workflow_id:
+            # Connected to existing workflow - skip workflow creation
+            console.print_info("Resuming conversation...")
+            console.print_newline()
+        else:
+            # Start new workflow
+            console.print_newline()
+            console.print_info(f"Task: {user_prompt}")
+            console.print_newline()
+
+            # Trigger workflow
+            console.print_info("Starting workflow...")
+            workflow_id = await trigger_human_in_loop_workflow(
+                user_prompt=user_prompt,
+                config=config.temporal,
+                workflow_id=config.workflow_id,
+            )
+
+            # Start execution
+            await start_workflow_execution(
+                client=client,
+                workflow_id=workflow_id,
+                user_prompt=user_prompt,
+            )
+
+            console.print_success("✓ Agent is now working on your task")
+            console.print_newline()
+
+        # Display workflow ID for future reconnection
+        console.print_dim(f"Workflow ID: {workflow_id}")
+        console.print_dim(f"(Use '/connect-workflow {workflow_id}' to resume this conversation later)")
         console.print_newline()
 
         # Interactive workflow loop
@@ -94,7 +152,7 @@ async def run_human_in_loop(config: HumanInLoopConfig) -> None:
                 _display_awaiting_input_status(status)
 
                 # Get user input
-                action = await _get_user_action(status)
+                action = await _get_user_action(status, client, workflow_id)
 
                 if action is None:
                     # User wants to end workflow
@@ -140,6 +198,15 @@ def _display_executing_status(status: WorkflowStatus, iteration: int) -> None:
         console.print_info(f"Progress: {len(status.findings)} finding(s)")
 
 
+def _display_help() -> None:
+    """Display available slash commands."""
+    console.print_info("Available commands:")
+    console.print_message("  /help                      - Show this help message")
+    console.print_message("  /connect-workflow <id>     - Connect to an existing workflow")
+    console.print_message("  /refresh                   - Get the latest workflow status")
+    console.print_message("  /end                       - End the conversation and close the workflow")
+
+
 def _display_awaiting_input_status(status: WorkflowStatus) -> None:
     """Display awaiting input status.
 
@@ -147,101 +214,71 @@ def _display_awaiting_input_status(status: WorkflowStatus) -> None:
         status: Current workflow status
     """
     console.print_newline()
-    console.print_header("Agent needs your input")
 
     if status.current_question:
-        panel = Panel(
-            status.current_question,
-            title="Question",
-            border_style="yellow",
-        )
-        console.print_table(panel)
+        # Display agent's response directly without extra formatting
+        console.print_message(status.current_question)
+        console.print_newline()
 
     if status.suggested_mcp_tools:
-        console.print_info(f"Suggested MCP tools: {', '.join(status.suggested_mcp_tools)}")
-
-    if status.findings:
-        console.print_info("Current progress:")
-        for i, finding in enumerate(status.findings, 1):
-            console.print_dim(f"  {i}. {finding}")
-
-    console.print_newline()
+        console.print_dim(f"Suggested tools: {', '.join(status.suggested_mcp_tools)}")
+        console.print_newline()
 
 
-async def _get_user_action(status: WorkflowStatus) -> Optional[UserAction]:
+async def _get_user_action(status: WorkflowStatus, client: TemporalClient, workflow_id: str) -> Optional[UserAction]:
     """Get user action via interactive prompt.
+
+    Users can:
+    - Type their response directly (default: text response)
+    - Type '/help' to see available commands
+    - Type '/refresh' to get the latest workflow status
+    - Type '/end' to end the workflow
 
     Args:
         status: Current workflow status
+        client: Temporal client for querying workflow
+        workflow_id: Current workflow ID
 
     Returns:
         UserAction or None if user wants to end
     """
-    # Check if this is a task completion (agent waiting for next task)
-    is_task_complete = (
-        status.current_question and
-        ("task completed" in status.current_question.lower() or
-         "would you like to continue" in status.current_question.lower())
-    )
+    while True:
+        content = Prompt.ask("You")
 
-    if is_task_complete:
-        console.print_newline()
-        console.print_info("What would you like to do next?")
-        console.print_message("  1) Provide a new task or follow-up question")
-        console.print_message("  2) End workflow")
-        console.print_newline()
+        # Handle special commands
+        if content.strip() == "/help":
+            _display_help()
+            console.print_newline()
+            continue
+        elif content.strip() == "/refresh":
+            # Get and display latest workflow status
+            console.print_newline()
+            console.print_info("Refreshing workflow status...")
+            try:
+                latest_status = await get_workflow_status(client, workflow_id)
+                console.print_success(f"State: {latest_status.state}")
 
-        choice = Prompt.ask("Choose an action", choices=["1", "2"], default="1")
+                if latest_status.current_question:
+                    console.print_newline()
+                    console.print_message(latest_status.current_question)
 
-        if choice == "2":
+                if latest_status.suggested_mcp_tools:
+                    console.print_dim(f"Suggested tools: {', '.join(latest_status.suggested_mcp_tools)}")
+
+                console.print_newline()
+            except Exception as e:
+                console.print_error(f"Failed to refresh status: {e}")
+                console.print_newline()
+            continue
+        elif content.strip() == "/end":
             return None
-
-        console.print_info("Enter your next task or question:")
-        content = Prompt.ask("Task")
-
-        return UserAction(
-            action_type=ActionType.TEXT,
-            content=content,
-            metadata={},
-        )
-    else:
-        # Regular human input request from agent
-        console.print_info("Action options:")
-        console.print_message("  1) Provide text response")
-        console.print_message("  2) Provide tool result / data")
-        console.print_message("  3) Approve or deny")
-        console.print_message("  4) End workflow")
-        console.print_newline()
-
-        choice = Prompt.ask("Choose an action", choices=["1", "2", "3", "4"], default="1")
-
-        if choice == "4":
-            return None
-
-        action_type_map = {
-            "1": ActionType.TEXT,
-            "2": ActionType.TOOL_RESULT,
-            "3": ActionType.APPROVAL,
-        }
-
-        action_type = action_type_map[choice]
-
-        # Get content based on action type
-        if action_type == ActionType.TEXT:
-            console.print_info("Enter your text response:")
-            content = Prompt.ask("Response")
-        elif action_type == ActionType.TOOL_RESULT:
-            console.print_info("Enter the tool result (paste JSON or description):")
-            content = Prompt.ask("Result")
-        else:  # APPROVAL
-            console.print_info("Approve or deny?")
-            content = Prompt.ask("Decision", choices=["yes", "no"], default="yes")
-
-        return UserAction(
-            action_type=action_type,
-            content=content,
-            metadata={},
-        )
+        else:
+            # Default to text response for all input
+            return UserAction(
+                action_type=ActionType.TEXT,
+                content=content,
+                metadata={},
+            )
 
 
 def _display_completed_status(

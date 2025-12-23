@@ -1,6 +1,7 @@
 """Human-in-the-loop workflow for interactive task execution."""
 
 import asyncio
+import json
 from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
@@ -8,6 +9,43 @@ from agents import Agent, Runner
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from temporalio.contrib import openai_agents
+
+from ein_agent_worker.activities import get_available_mcp_servers
+
+
+AGENT_INSTRUCTIONS = """You are an AI assistant in a continuous interactive conversation with a user.
+
+You have access to MCP tools to help with operational tasks. This is an ongoing conversation where:
+- The user asks questions or requests tasks
+- You use MCP tools to gather information and complete tasks
+- You respond naturally with the results
+- The user can ask follow-up questions or new tasks
+- The conversation continues until the user explicitly ends it
+
+Your workflow:
+1. Read the user's request carefully
+2. Use MCP tools to gather necessary information or perform actions
+3. Respond directly with the results in plain text - just answer naturally
+4. Only use special JSON formats when you specifically need help (see below)
+
+CRITICAL - HANDLING MCP TOOL FAILURES:
+When an MCP tool call fails (authentication error, connection error, etc.), DO NOT retry endlessly.
+Instead, immediately ask the user for help using the NEED_HUMAN_INPUT format.
+
+Response Formats:
+
+DEFAULT (most responses): Just respond naturally in plain text with the information.
+Example: "Here are the pods in the temporal namespace:\n- pod-1: Running\n- pod-2: Running\n..."
+
+When you need human input (tool failures, clarification needed):
+{
+    "type": "NEED_HUMAN_INPUT",
+    "question": "Your specific question (e.g., 'The kubernetes MCP tool failed with error: Unauthorized. Can you check the credentials?')",
+    "suggested_tools": [],
+    "findings_so_far": []
+}
+
+Do NOT use TASK_COMPLETE format unless explicitly needed. Just respond naturally."""
 
 
 @workflow.defn
@@ -29,9 +67,7 @@ class HumanInLoopWorkflow:
     def __init__(self) -> None:
         """Initialize workflow state."""
         self.state = "pending"
-        self.query: Optional[str] = None
-        self.mcp_server_names: List[str] = []
-        self.context: Dict[str, str] = {}
+        self.user_prompt: Optional[str] = None
 
         # State for human interaction
         self.current_question: Optional[str] = None
@@ -57,17 +93,14 @@ class HumanInLoopWorkflow:
         """Start the workflow execution.
 
         Args:
-            execution_input: Dict containing query, mcp_servers, and context
+            execution_input: Dict containing user_prompt
         """
         workflow.logger.info("Received start_execution signal")
 
-        self.query = execution_input.get("query", "")
-        self.mcp_server_names = execution_input.get("mcp_servers", [])
-        self.context = execution_input.get("context", {})
+        self.user_prompt = execution_input.get("user_prompt", "")
         self.execution_started = True
 
-        workflow.logger.info(f"Execution started with query: {self.query}")
-        workflow.logger.info(f"MCP servers: {self.mcp_server_names}")
+        workflow.logger.info(f"Execution started with user_prompt: {self.user_prompt}")
 
     # NOTE: Using @workflow.signal instead of @workflow.update as a workaround
     # The Juju Temporal operator (v1.23.1) doesn't support workflow updates.
@@ -126,10 +159,13 @@ class HumanInLoopWorkflow:
                 self.state = "completed"
                 return "Workflow ended before execution"
 
-            # Load MCP servers from memo (fallback to empty if not set)
-            memo_mcp_servers = workflow.memo_value("mcp_servers", default=[])
-            # Use mcp_servers from start_execution if available, otherwise from memo
-            mcp_server_names = self.mcp_server_names if self.mcp_server_names else memo_mcp_servers
+            # Get available MCP servers from worker configuration via activity
+            # This allows the workflow to discover servers without CLI configuration
+            mcp_server_names = await workflow.execute_activity(
+                get_available_mcp_servers,
+                start_to_close_timeout=timedelta(seconds=10),
+            )
+            workflow.logger.info(f"Discovered MCP servers from worker: {mcp_server_names}")
 
             # Configure MCP activities to fail fast (no retries)
             # This allows errors to surface immediately to the agent for user interaction
@@ -179,14 +215,7 @@ class HumanInLoopWorkflow:
         Returns:
             Formatted prompt string
         """
-        prompt_parts = [f"Task: {self.query}"]
-
-        if self.context:
-            prompt_parts.append("\nContext:")
-            for key, value in self.context.items():
-                prompt_parts.append(f"  {key}: {value}")
-
-        return "\n".join(prompt_parts)
+        return f"Task: {self.user_prompt}"
 
     async def _execute_with_human_loop(
         self,
@@ -203,54 +232,9 @@ class HumanInLoopWorkflow:
             Final result or report
         """
         # Create the agent with human-in-the-loop instructions
-        agent_instructions = """You are an AI assistant in a continuous interactive session with a user.
-
-You have access to MCP tools to help with operational tasks. This is an ongoing conversation where:
-- The user will give you tasks to complete
-- You execute the tasks using available MCP tools
-- You report results back to the user
-- The user may ask follow-up questions or give you new tasks
-- The conversation continues until the user explicitly decides to end it
-
-Your workflow:
-1. Read the user's request carefully
-2. Use MCP tools to gather necessary information or perform actions
-3. When you need clarification or approval, ask the user (using NEED_HUMAN_INPUT format)
-4. When you've completed a task, report the results (using TASK_COMPLETE format)
-5. The user will either provide a new task or end the session
-
-CRITICAL - HANDLING MCP TOOL FAILURES:
-When an MCP tool call fails (authentication error, connection error, etc.), DO NOT retry endlessly.
-Instead, immediately ask the user for help using the NEED_HUMAN_INPUT format.
-Explain what tool failed, why it failed, and ask the user to either:
-- Provide the data manually
-- Fix the authentication/connection issue
-- Skip this data source and continue with what you have
-- Try an alternative approach
-
-Response Formats:
-
-When you need human input:
-{
-    "type": "NEED_HUMAN_INPUT",
-    "question": "Your specific question (e.g., 'MCP tool X failed with error Y. Would you like to provide the data manually or skip this step?')",
-    "suggested_tools": ["tool1", "tool2"],
-    "findings_so_far": ["finding1", "finding2"]
-}
-
-When you complete a task:
-{
-    "type": "TASK_COMPLETE",
-    "report": "Your results/findings here. Be clear and concise.",
-    "findings": ["finding1", "finding2"]
-}
-
-Remember: After completing a task, the user will decide whether to continue with more tasks.
-Stay ready for follow-up questions and new requests."""
-
         agent = Agent(
             name="HumanInLoopAgent",
-            instructions=agent_instructions,
+            instructions=AGENT_INSTRUCTIONS,
             model="gemini/gemini-2.5-flash",
             mcp_servers=mcp_servers,
         )
@@ -297,46 +281,11 @@ Explain what failed and provide options for how to proceed.
                 continue
 
             # Parse agent response to determine next action
-            import json
             try:
                 response_data = json.loads(agent_response)
                 response_type = response_data.get("type")
 
-                if response_type == "TASK_COMPLETE":
-                    # Task is complete - but don't end workflow automatically
-                    # Instead, ask the user if they want to continue
-                    self.state = "awaiting_input"
-                    self.findings = response_data.get("findings", [])
-                    report = response_data.get("report", agent_response)
-                    self.current_question = f"Task completed!\n\n{report}\n\nWould you like to continue with another task or end the workflow?"
-                    self.suggested_mcp_tools = []
-
-                    workflow.logger.info("Task complete, asking user if they want to continue")
-
-                    # Wait for user action
-                    self.action_received.clear()
-                    await self.action_received.wait()
-
-                    if self.should_end:
-                        return report
-
-                    # Process the user action
-                    action = self.pending_action
-                    action_type = action.get("action_type")
-                    content = action.get("content")
-
-                    workflow.logger.info(f"User wants to continue: {content[:100]}...")
-
-                    # Add user's new request to conversation
-                    conversation_history.append(f"AGENT: {agent_response}")
-                    conversation_history.append(f"User: {content}")
-
-                    # Reset state to executing
-                    self.state = "executing"
-                    self.current_question = None
-                    self.pending_action = None
-
-                elif response_type == "NEED_HUMAN_INPUT":
+                if response_type == "NEED_HUMAN_INPUT":
                     # Agent needs human input
                     self.state = "awaiting_input"
                     self.current_question = response_data.get("question")
@@ -380,42 +329,58 @@ Explain what failed and provide options for how to proceed.
                 else:
                     # Unknown response type, treat as regular output
                     conversation_history.append(f"AGENT: {agent_response}")
-
-            except json.JSONDecodeError:
-                # Not JSON, treat as regular agent output
-                # Check if it looks like a completion
-                if any(keyword in agent_response.lower() for keyword in ["complete", "finished", "done", "summary", "conclusion"]):
-                    # Looks like a final report - but ask user if they want to continue
+                    # Display to user and get next input
                     self.state = "awaiting_input"
-                    self.current_question = f"Agent report:\n\n{agent_response}\n\nWould you like to continue with another task or end the workflow?"
+                    self.current_question = agent_response
                     self.suggested_mcp_tools = []
 
-                    workflow.logger.info("Agent provided completion message, asking user if they want to continue")
-
-                    # Wait for user action
+                    # Wait for user's next input
                     self.action_received.clear()
                     await self.action_received.wait()
 
                     if self.should_end:
                         return agent_response
 
-                    # Process the user action
                     action = self.pending_action
                     content = action.get("content")
-
-                    workflow.logger.info(f"User wants to continue: {content[:100]}...")
-
-                    # Add user's new request to conversation
-                    conversation_history.append(f"AGENT: {agent_response}")
                     conversation_history.append(f"User: {content}")
 
-                    # Reset state to executing
+                    # Reset state
                     self.state = "executing"
                     self.current_question = None
                     self.pending_action = None
-                else:
-                    # Continue conversation
-                    conversation_history.append(f"AGENT: {agent_response}")
+
+            except json.JSONDecodeError:
+                # Not JSON, treat as regular agent output - display and wait for user input
+                conversation_history.append(f"AGENT: {agent_response}")
+
+                # Display agent's response to user and wait for next input
+                self.state = "awaiting_input"
+                self.current_question = agent_response
+                self.suggested_mcp_tools = []
+
+                workflow.logger.info("Agent provided natural response, waiting for user input")
+
+                # Wait for user action
+                self.action_received.clear()
+                await self.action_received.wait()
+
+                if self.should_end:
+                    return agent_response
+
+                # Process the user action
+                action = self.pending_action
+                content = action.get("content")
+
+                workflow.logger.info(f"User continues: {content[:100]}...")
+
+                # Add user's input to conversation
+                conversation_history.append(f"User: {content}")
+
+                # Reset state to executing
+                self.state = "executing"
+                self.current_question = None
+                self.pending_action = None
 
         # Max iterations reached
         workflow.logger.warning(f"Max iterations ({max_iterations}) reached")

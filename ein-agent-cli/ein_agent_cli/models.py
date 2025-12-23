@@ -432,13 +432,9 @@ class WorkflowStatus(BaseModel):
 class HumanInLoopConfig(BaseModel):
     """Configuration for human-in-the-loop workflow."""
 
-    query: str = Field(
+    user_prompt: str = Field(
         default="",
-        description="Query or task description (optional, can be provided interactively)"
-    )
-    mcp_servers: List[str] = Field(
-        default=[],  # Empty by default - add MCP servers when available
-        description="MCP server names to use"
+        description="User prompt or task description (optional, can be provided interactively)"
     )
     workflow_id: Optional[str] = Field(
         default=None,
@@ -460,54 +456,28 @@ class HumanInLoopConfig(BaseModel):
         default_factory=TemporalConfig,
         description="Temporal configuration"
     )
-    context: Dict[str, str] = Field(
-        default_factory=dict,
-        description="Additional context for the task"
-    )
-
-    @field_validator('mcp_servers')
-    @classmethod
-    def split_comma_separated_servers(cls, v: List[str]) -> List[str]:
-        """Split comma-separated server names in list items.
-
-        This handles cases where users pass --mcp-server kubernetes,grafana
-        instead of --mcp-server kubernetes --mcp-server grafana
-        """
-        if not v:
-            return v
-
-        result = []
-        for item in v:
-            # Split by comma and strip whitespace
-            servers = [s.strip() for s in item.split(',') if s.strip()]
-            result.extend(servers)
-        return result
 
     @classmethod
     def from_cli_args(
         cls,
-        query: str,
-        mcp_servers: List[str],
+        user_prompt: str,
         temporal_host: Optional[str],
         temporal_namespace: Optional[str],
         temporal_queue: Optional[str],
         workflow_id: Optional[str],
         poll_interval: int,
         max_iterations: int,
-        context: Optional[Dict[str, str]],
     ) -> "HumanInLoopConfig":
         """Create HumanInLoopConfig from CLI arguments.
 
         Args:
-            query: Query or task description
-            mcp_servers: MCP server names to use
+            user_prompt: User prompt or task description
             temporal_host: Temporal server host:port
             temporal_namespace: Temporal namespace
             temporal_queue: Temporal task queue
             workflow_id: Custom workflow ID
             poll_interval: Status poll interval in seconds
             max_iterations: Maximum workflow iterations
-            context: Additional context dictionary
 
         Returns:
             HumanInLoopConfig instance
@@ -521,11 +491,9 @@ class HumanInLoopConfig(BaseModel):
             temporal_config.queue = temporal_queue
 
         return cls(
-            query=query,
-            mcp_servers=mcp_servers,
+            user_prompt=user_prompt,
             workflow_id=workflow_id,
             poll_interval=poll_interval,
             max_iterations=max_iterations,
             temporal=temporal_config,
-            context=context or {},
         )
