@@ -213,3 +213,47 @@ async def end_workflow(
     handle = client.get_workflow_handle(workflow_id)
 
     await handle.signal("end_workflow")
+
+
+async def list_workflows(
+    config: TemporalConfig, status: Optional[str] = None
+) -> List[Dict]:
+    """List workflows in Temporal, with an optional status filter.
+
+    Args:
+        config: Temporal configuration.
+        status: Optional workflow status to filter by (e.g., 'Running', 'Completed').
+                If None or 'All', all workflows are listed.
+
+    Returns:
+        List of dictionaries, each representing a workflow.
+    """
+    console.print_dim(f"Connecting to Temporal: {config.host}, namespace={config.namespace}")
+
+    client = await TemporalClient.connect(
+        config.host,
+        namespace=config.namespace,
+    )
+
+    query = ""
+    if status and status.lower() != "all":
+        query = f"ExecutionStatus = '{status}'"
+    
+    console.print_dim(f"Querying workflows with: {query or 'No filter'}")
+
+    workflows_list = []
+    try:
+        async for workflow in client.list_workflows(query):
+            workflow_info = {
+                "workflow_id": workflow.id,
+                "workflow_type": workflow.workflow_type,
+                "start_time": workflow.start_time.isoformat() if workflow.start_time else "N/A",
+                "status": workflow.status.name,
+                "task_queue": workflow.task_queue,
+            }
+            workflows_list.append(workflow_info)
+    except Exception as e:
+        console.print_error(f"Error listing workflows: {e}")
+        return []
+
+    return workflows_list
