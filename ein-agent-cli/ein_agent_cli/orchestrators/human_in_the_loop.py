@@ -15,19 +15,8 @@ from temporalio.api.common.v1 import WorkflowExecution
 from ein_agent_cli import console
 from ein_agent_cli.completer import SlashCommandCompleter
 from ein_agent_cli.slash_commands import (
-    AlertsCommand,
     CommandRegistry,
-    CommandResult,
-    CompactRCACommand,
-    CompleteCommand,
-    ContextCommand,
-    EndCommand,
     handle_command,
-    ImportAlertsCommand,
-    NewCommand,
-    RefreshCommand,
-    SwitchContextCommand,
-    WorkflowsCommand,
 )
 from ein_agent_cli.temporal import (
     trigger_human_in_loop_workflow,
@@ -76,16 +65,6 @@ async def run_human_in_loop(config: HumanInLoopConfig) -> None:
 
         # Initialize and populate the command registry
         registry = CommandRegistry()
-        registry.register(WorkflowsCommand())
-        registry.register(SwitchContextCommand())
-        registry.register(NewCommand())
-        registry.register(RefreshCommand())
-        registry.register(EndCommand())
-        registry.register(ImportAlertsCommand())
-        registry.register(AlertsCommand())
-        registry.register(ContextCommand())
-        registry.register(CompactRCACommand())
-        registry.register(CompleteCommand())
 
         # Initial prompt loop to get first workflow
         workflow_id, user_prompt, cmd_result = await _initial_user_prompt_loop(config, client, registry, session)
@@ -369,16 +348,7 @@ async def _completed_workflow_loop(config: HumanInLoopConfig, client: TemporalCl
     """A limited interactive loop for a completed workflow."""
     console.print_info("Workflow is completed. Use /workflows to switch workflows or start new ones.")
 
-    # A smaller command registry for completed workflows
     completed_registry = CommandRegistry()
-    completed_registry.register(SwitchContextCommand())
-    completed_registry.register(NewCommand())
-    completed_registry.register(WorkflowsCommand())
-    completed_registry.register(EndCommand())
-    completed_registry.register(AlertsCommand())
-    completed_registry.register(ContextCommand())
-    completed_registry.register(CompactRCACommand())
-    completed_registry.register(ImportAlertsCommand())
 
     while True:
         result = await _get_user_action(config, client, completed_registry, session)
